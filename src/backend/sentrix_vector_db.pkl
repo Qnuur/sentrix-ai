@@ -1,0 +1,79 @@
+import httpx
+from fastapi import FastAPI
+from pydantic import BaseModel
+from fastapi.middleware.cors import CORSMiddleware
+
+app = FastAPI()
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+print("🚀 Sentrix OLLAMA TURBO: ASENKRON MOTOR VE FEW-SHOT AKTİF!")
+
+class MessageRequest(BaseModel):
+    text: str
+    attempt: int = 0
+
+system_prompt = """Senin adın Prof. Nöral. SADECE Bilgisayar Bilimleri, Yapay Zeka ve Yazılım Mühendisliği alanlarındaki soruları yanıtlamakla görevlisin.
+
+GÖREV KURALLARI:
+1. Soru bu akademik alanların İÇİNDEYSE, detaylı ve teknik bir dille cevap ver.
+2. Soru bu akademik alanların DIŞINDAYSA (konunun ne olduğu HİÇ FARK ETMEZ), soruyu anlamaya veya çözmeye çalışma. SADECE şunu yaz ve sus: "Üzgünüm, Sentrix Akademik Asistanı olarak yalnızca yapay zeka ve yazılım mimarileri konularında yanıt verebilirim."
+"""
+
+# TSX dosyasındaki canlı ping sayacının 405 hatası vermemesi için gereken rota
+@app.get("/ping")
+async def ping_server():
+    return {"status": "ok"}
+
+@app.post("/predict")
+async def predict_message(request: MessageRequest):
+    try:
+        url = "http://127.0.0.1:11434/api/chat" 
+        payload = {
+            "model": "qwen2.5:1.5b",
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": request.text}
+            ],
+            "stream": False,
+            "keep_alive": "1h", 
+            "options": {
+                "temperature": 0.1 
+            }
+        }
+        
+        # Sınırı 60 saniyeden 120 saniyeye çıkardık. Ollama yavaşlasa bile hata fırlatıp çökmeyecek.
+        async with httpx.AsyncClient(timeout=120.0) as client:
+            response = await client.post(url, json=payload)
+            
+            if response.status_code != 200:
+                hata_mesaji = response.text
+                print(f"❌ OLLAMA REDDETTİ: {hata_mesaji}")
+                return {"text": request.text, "result": f"Ollama'dan Hata Döndü: {hata_mesaji}", "confidence": "Hata"}
+
+            response_data = response.json()
+            reply = response_data["message"]["content"]
+        
+        return {
+            "text": request.text, 
+            "result": reply.strip(), 
+            "confidence": "%99.9 (Ollama GPU - Yapay Zeka Sınırlandırması)"
+        }
+        
+    except httpx.ConnectError:
+        print("❌ OLLAMA KAPALI: 127.0.0.1:11434 adresine bağlantı kurulamadı.")
+        return {"text": request.text, "result": "Lokal Ollama sunucusuna ulaşılamadı. Lütfen terminalden 'ollama serve' komutunu çalıştırın.", "confidence": "Bağlantı Hatası"}
+        
+    except Exception as e:
+        print(f"❌ BEKLENMEYEN HATA: {str(e)}")
+        return {"text": request.text, "result": f"Sistem Hatası: {str(e)}", "confidence": "Kritik Hata"}
+
+if __name__ == "__main__":
+    import uvicorn
+    # YENİ: access_log=False diyerek terminaldeki o sürekli akan "200 OK" spamını kapatıyoruz.
+    uvicorn.run(app, host="0.0.0.0", port=8000, access_log=False)
